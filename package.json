@@ -1,0 +1,32 @@
+{
+  "name": "ead-migration-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "login": "bun run src/scripts/login.ts",
+    "discover": "bun run src/scripts/discover.ts",
+    "extract": "bun run src/scripts/extract.ts",
+    "download": "bun run src/scripts/download.ts",
+    "upload:drive": "bun run src/scripts/upload-drive.ts",
+    "migrate": "bun run src/scripts/migrate.ts",
+    "audit": "bun run src/scripts/audit.ts",
+    "cleanup": "bun run src/scripts/cleanup-leaked-assets.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "fs-extra": "^11.3.2",
+    "p-limit": "^7.2.0",
+    "playwright": "^1.57.0",
+    "sanitize-filename": "^1.6.3",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^25.0.0",
+    "bun-types": "^1.3.4",
+    "typescript": "^5.9.3"
+  }
+}
