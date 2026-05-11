@@ -1,0 +1,12 @@
+.env
+.DS_Store
+node_modules/
+bun.lockb
+storage/auth/
+storage/downloads/
+storage/logs/
+storage/manifests/
+storage/drive-export/
+test-results/
+playwright-report/
+codex-scripts/
