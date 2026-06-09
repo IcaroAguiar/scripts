@@ -33,6 +33,7 @@ export interface LessonContent {
 
 export interface LessonManifest extends LessonContent {
   name: string;
+  displayName?: string;
   index: number;
   url: string;
   slug: string;

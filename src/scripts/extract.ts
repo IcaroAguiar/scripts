@@ -2,6 +2,11 @@ import path from 'node:path';
 import { ensureRuntimeDirs, env, manifestStore, runtimeContext } from './common';
 import type { CourseManifest, LessonManifest } from '../core/types';
 import { Logger } from '../core/logger/logger';
+import {
+  filterCoursesByProducts,
+  loadProductsFromJson,
+  parseProductsArg
+} from './discover-products';
 
 function lessonHasPendingExtraction(lesson: LessonManifest, force: boolean): boolean {
   if (process.env.EXTRACT_FAILED_ONLY === '1') {
@@ -34,7 +39,7 @@ async function runLessonWorker(envVars: Record<string, string>, timeoutMs: numbe
       child.exited,
       new Promise<number>((resolve) => {
         timeout = setTimeout(() => {
-          child.kill();
+          child.kill(9);
           resolve(124);
         }, timeoutMs);
       })
@@ -46,34 +51,76 @@ async function runLessonWorker(envVars: Record<string, string>, timeoutMs: numbe
   }
 }
 
+function workerOutputHasCompletionMarker(output: string): boolean {
+  const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (!line || !line.startsWith('{') || !line.endsWith('}')) continue;
+    try {
+      const parsed = JSON.parse(line) as { course?: unknown; lesson?: unknown; assets?: unknown };
+      if (typeof parsed.course === 'string' && typeof parsed.lesson === 'string' && typeof parsed.assets === 'number') {
+        return true;
+      }
+    } catch {
+      // ignore non-JSON lines
+    }
+  }
+  return false;
+}
+
 const context = runtimeContext(true);
 await ensureRuntimeDirs(context);
 
 const runtimeEnv = env();
 const force = process.env.EXTRACT_FORCE === '1';
 const maxCourses = Number.parseInt(process.env.EXTRACT_MAX_COURSES ?? '', 10);
-const timeoutMs = Number.parseInt(process.env.EXTRACT_LESSON_TIMEOUT_MS ?? '45000', 10);
+const timeoutMs = Number.parseInt(process.env.EXTRACT_LESSON_TIMEOUT_MS ?? '90000', 10);
 const courseSlug = process.env.EXTRACT_COURSE_SLUG;
 const store = manifestStore(context);
 const logger = new Logger(context.logsDir);
 const manifestPaths = await store.listCourseManifests(context.platform);
+const manifests = await Promise.all(manifestPaths.map((manifestPath) => store.readCourse(manifestPath)));
+
+const cliProducts = parseProductsArg(process.argv.slice(2));
+const selectedProducts =
+  cliProducts.length > 0 ? cliProducts : (await loadProductsFromJson()).products;
+const productsSource = cliProducts.length > 0 ? 'cli' : 'json';
+const { filteredCourses: scopedManifests, missingProducts } = filterCoursesByProducts(
+  manifests.map((manifest) => ({ ...manifest, name: manifest.course })),
+  selectedProducts
+);
+
+await logger.log('DISCOVER', 'extract course filter summary', {
+  source: productsSource,
+  totalFound: manifests.length,
+  totalFiltered: scopedManifests.length,
+  selectedProducts: selectedProducts.length,
+  missingProductsCount: missingProducts.length,
+  missingProducts
+});
+
+if (scopedManifests.length === 0) {
+  await logger.log('SKIPPED', 'no courses matched selected products; skipping extract run');
+  process.exit(0);
+}
 
 let processedCourses = 0;
 let processedLessons = 0;
 let failedLessons = 0;
 
-for (const manifestPath of manifestPaths) {
-  let manifest = await store.readCourse(manifestPath);
-  if (runtimeEnv.THEMEMBERS_COURSE_URL && manifest.url !== runtimeEnv.THEMEMBERS_COURSE_URL) continue;
-  if (courseSlug && manifest.slug !== courseSlug) continue;
+for (const manifest of scopedManifests) {
+  let currentManifest = manifest;
+  if (runtimeEnv.THEMEMBERS_COURSE_URL && currentManifest.url !== runtimeEnv.THEMEMBERS_COURSE_URL) continue;
+  if (courseSlug && currentManifest.slug !== courseSlug) continue;
 
-  const pendingCount = countLessons(manifest, force);
+  const pendingCount = countLessons(currentManifest, force);
   if (pendingCount === 0) continue;
   if (Number.isFinite(maxCourses) && processedCourses >= maxCourses) break;
+  const manifestPath = path.join(context.manifestDir, context.platform, `${currentManifest.slug}.json`);
 
   processedCourses += 1;
   await logger.log('DISCOVER', `extracting course lessons`, {
-    course: manifest.course,
+    course: currentManifest.course,
     lessons: pendingCount
   });
 
@@ -81,7 +128,7 @@ for (const manifestPath of manifestPaths) {
   let courseAssets = 0;
   let courseFailures = 0;
 
-  for (const [moduleIndex, mod] of manifest.modules.entries()) {
+  for (const [moduleIndex, mod] of currentManifest.modules.entries()) {
     for (const [lessonIndex, lesson] of mod.lessons.entries()) {
       if (!lessonHasPendingExtraction(lesson, force)) continue;
       courseLessons += 1;
@@ -93,21 +140,32 @@ for (const manifestPath of manifestPaths) {
           EXTRACT_MODULE_INDEX: String(moduleIndex),
           EXTRACT_LESSON_INDEX: String(lessonIndex),
           EXTRACT_FORCE: force ? '1' : '0',
-          EXTRACT_COURSE_URL: manifest.url,
+          EXTRACT_COURSE_URL: currentManifest.url,
           EXTRACT_HOMEPAGE_FIRST:
             process.env.EXTRACT_HOMEPAGE_FIRST === '1' || lesson.status === 'failed' ? '1' : '0'
         },
         timeoutMs
       );
 
-      manifest = await store.readCourse(manifestPath);
-      const updatedLesson = manifest.modules[moduleIndex]?.lessons[lessonIndex];
+      currentManifest = await store.readCourse(manifestPath);
+      const updatedLesson = currentManifest.modules[moduleIndex]?.lessons[lessonIndex];
       const assets = updatedLesson?.assets.length ?? 0;
 
-      if (result.ok) {
+      const lessonPersistedAsDiscovered = updatedLesson?.status === 'discovered';
+      const workerCompletedLogically = workerOutputHasCompletionMarker(result.output);
+      if (result.ok || lessonPersistedAsDiscovered || workerCompletedLogically) {
         courseAssets += assets;
+        if (!result.ok && (lessonPersistedAsDiscovered || workerCompletedLogically)) {
+          await logger.log('DISCOVER', `lesson worker exited non-zero but completion marker was detected`, {
+            course: currentManifest.course,
+            lesson: updatedLesson?.name ?? lesson.name,
+            assets,
+            persistedAsDiscovered: lessonPersistedAsDiscovered,
+            completionMarkerInOutput: workerCompletedLogically
+          });
+        }
         await logger.log('DISCOVER', `lesson worker completed`, {
-          course: manifest.course,
+          course: currentManifest.course,
           lesson: updatedLesson?.name ?? lesson.name,
           assets
         });
@@ -118,10 +176,10 @@ for (const manifestPath of manifestPaths) {
           updatedLesson.status = 'failed';
           updatedLesson.lastError =
             result.output || `Lesson extraction worker timed out after ${timeoutMs}ms or exited with an error.`;
-          await store.saveCourse(manifest);
+          await store.saveCourse(currentManifest);
         }
         await logger.log('FAILED', `lesson worker failed`, {
-          course: manifest.course,
+          course: currentManifest.course,
           lesson: updatedLesson?.name ?? lesson.name,
           error: result.output || `timeout after ${timeoutMs}ms`
         });
@@ -130,7 +188,7 @@ for (const manifestPath of manifestPaths) {
   }
 
   await logger.log('DISCOVER', `finished course lesson extraction`, {
-    course: manifest.course,
+    course: currentManifest.course,
     lessons: courseLessons,
     assets: courseAssets,
     failures: courseFailures

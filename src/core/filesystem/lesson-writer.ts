@@ -1,7 +1,11 @@
 import fs from 'fs-extra';
 import path from 'node:path';
 import type { CourseManifest, LessonManifest, ModuleManifest } from '../types';
-import { numberedName } from '../utils/slug';
+import { cleanName, numberedName } from '../utils/slug';
+
+function resolvedLessonName(lesson: LessonManifest): string {
+  return lesson.displayName && lesson.displayName.trim() ? lesson.displayName : lesson.name;
+}
 
 export function lessonDir(downloadsDir: string, manifest: CourseManifest, mod: ModuleManifest, lesson: LessonManifest): string {
   return path.join(
@@ -9,7 +13,7 @@ export function lessonDir(downloadsDir: string, manifest: CourseManifest, mod: M
     manifest.platform,
     numberedName(1, manifest.course).replace(/^01 - /, ''),
     numberedName(mod.index, mod.name),
-    numberedName(lesson.index, lesson.name)
+    cleanName(resolvedLessonName(lesson))
   );
 }
 
@@ -20,6 +24,7 @@ export async function writeLessonFiles(
   lesson: LessonManifest
 ): Promise<void> {
   const dir = lessonDir(downloadsDir, manifest, mod, lesson);
+  const lessonDisplayName = resolvedLessonName(lesson);
   await fs.ensureDir(path.join(dir, 'materiais'));
   await fs.ensureDir(path.join(dir, 'audios'));
   await fs.writeFile(path.join(dir, 'descricao.md'), lesson.description || '');
@@ -31,6 +36,7 @@ export async function writeLessonFiles(
       course: manifest.course,
       module: mod.name,
       lesson: lesson.name,
+      ...(lessonDisplayName !== lesson.name ? { lessonDisplayName } : {}),
       url: lesson.url,
       assets: lesson.assets
     },

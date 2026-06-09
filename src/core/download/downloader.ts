@@ -43,9 +43,19 @@ export class Downloader {
   async downloadCourse(manifest: CourseManifest): Promise<CourseManifest> {
     const logger = new Logger(this.logsDir);
     const limit = pLimit(this.concurrency);
+    const debugDownload = process.env.DOWNLOAD_DEBUG === '1';
 
     for (const mod of manifest.modules) {
       for (const lesson of mod.lessons) {
+        if (debugDownload) {
+          await logger.log('DISCOVER', 'download lesson start', {
+            course: manifest.course,
+            module: mod.name,
+            lesson: lesson.name,
+            lessonDisplayName: lesson.displayName ?? lesson.name,
+            assets: lesson.assets.length
+          });
+        }
         await writeLessonFiles(this.downloadsDir, manifest, mod, lesson);
         await Promise.all(
           lesson.assets.map((asset) =>
@@ -59,6 +69,16 @@ export class Downloader {
               const targetPath = assetTargetPath(this.downloadsDir, manifest, mod, lesson, cleanName(asset.name), bucket);
               asset.targetPath = targetPath;
               asset.localPath = targetPath;
+              if (debugDownload) {
+                await logger.log('DISCOVER', 'download asset target resolved', {
+                  lesson: lesson.name,
+                  lessonDisplayName: lesson.displayName ?? lesson.name,
+                  assetName: asset.name,
+                  assetType: asset.type,
+                  assetUrl: redactedUrl(asset.url),
+                  targetPath
+                });
+              }
 
               if (asset.url.startsWith('unresolved://')) {
                 asset.status = 'failed';
@@ -71,6 +91,13 @@ export class Downloader {
                 asset.sha256 = await sha256File(targetPath);
                 asset.status = 'skipped';
                 await logger.log('SKIPPED', `already exists ${path.relative(this.downloadsDir, targetPath)}`);
+                if (debugDownload) {
+                  await logger.log('DISCOVER', 'download asset skipped existing file', {
+                    lesson: lesson.name,
+                    assetName: asset.name,
+                    targetPath
+                  });
+                }
                 return;
               }
 
@@ -103,6 +130,23 @@ export class Downloader {
             })
           )
         );
+        if (debugDownload) {
+          const summary = lesson.assets.reduce(
+            (acc, asset) => {
+              const key = asset.status ?? 'pending';
+              acc[key] = (acc[key] ?? 0) + 1;
+              return acc;
+            },
+            {} as Record<string, number>
+          );
+          await logger.log('DISCOVER', 'download lesson completed', {
+            course: manifest.course,
+            module: mod.name,
+            lesson: lesson.name,
+            lessonDisplayName: lesson.displayName ?? lesson.name,
+            summary
+          });
+        }
       }
     }
 

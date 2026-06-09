@@ -8,12 +8,14 @@
     "discover": "bun run src/scripts/discover.ts",
     "extract": "bun run src/scripts/extract.ts",
     "download": "bun run src/scripts/download.ts",
+    "pipeline": "bun run src/scripts/pipeline.ts",
     "upload:drive": "bun run src/scripts/upload-drive.ts",
     "migrate": "bun run src/scripts/migrate.ts",
     "audit": "bun run src/scripts/audit.ts",
     "cleanup": "bun run src/scripts/cleanup-leaked-assets.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "discovery": "bun run src/scripts/discover.ts"
   },
   "dependencies": {
     "dotenv": "^17.2.3",

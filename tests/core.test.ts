@@ -6,6 +6,7 @@ import { classifyAsset, extractLessonContentFromPage } from '../src/core/extract
 import { courseManifestSchema } from '../src/core/manifest/schema';
 import { cleanName, numberedName, slugify } from '../src/core/utils/slug';
 import { LocalDriveStorageAdapter } from '../src/core/drive/local-drive-storage';
+import { lessonDir, writeLessonFiles } from '../src/core/filesystem/lesson-writer';
 import type { CourseManifest } from '../src/core/types';
 
 function sampleManifest(): CourseManifest {
@@ -127,6 +128,42 @@ describe('filesystem naming', () => {
     expect(cleanName('  Aula: inicial 🚀 / teste  ')).toBe('Aula inicial teste');
     expect(numberedName(2, 'Módulo Áudio')).toBe('02 - Modulo Audio');
     expect(slugify('Curso Ágil para EAD')).toBe('curso-agil-para-ead');
+  });
+
+  test('uses lesson display name for lesson directory without numbering', () => {
+    const manifest = sampleManifest();
+    const module = manifest.modules[0]!;
+    const lesson = {
+      ...module.lessons[0]!,
+      index: 7,
+      name: 'ConcluidoAula 07 - Nome Original',
+      displayName: 'Aula 07 - Nome Final'
+    };
+    const dir = lessonDir('/tmp/downloads', manifest, module, lesson);
+    expect(dir.endsWith(path.join('01 - Introducao', 'Aula 07 - Nome Final'))).toBe(true);
+  });
+
+  test('writes metadata with lessonDisplayName only when different from lesson name', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lesson-files-'));
+    const manifest = sampleManifest();
+    const module = manifest.modules[0]!;
+    const lesson = {
+      ...module.lessons[0]!,
+      name: 'ConcluidoAula 01 - Abertura',
+      displayName: 'Aula 01 - Abertura'
+    };
+
+    await writeLessonFiles(tmp, manifest, module, lesson);
+    const metaPath = path.join(lessonDir(tmp, manifest, module, lesson), 'metadata.json');
+    const metadata = await fs.readJson(metaPath);
+    expect(metadata.lesson).toBe('ConcluidoAula 01 - Abertura');
+    expect(metadata.lessonDisplayName).toBe('Aula 01 - Abertura');
+
+    const lessonWithoutOverride = { ...lesson, displayName: lesson.name };
+    await writeLessonFiles(tmp, manifest, module, lessonWithoutOverride);
+    const metaPathNoDiff = path.join(lessonDir(tmp, manifest, module, lessonWithoutOverride), 'metadata.json');
+    const metadataNoDiff = await fs.readJson(metaPathNoDiff);
+    expect(metadataNoDiff.lessonDisplayName).toBeUndefined();
   });
 });
 

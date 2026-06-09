@@ -1,9 +1,10 @@
 import path from 'node:path';
+import fs from 'fs-extra';
 import type { BrowserContext, Page, Response } from 'playwright';
 import { fillLoginForm, persistStorageState } from '../../core/auth/session';
 import { createBrowserContext, expandAccordions, scrollToBottom, waitForHydration } from '../../core/browser/browser';
 import { loadEnv } from '../../core/config/env';
-import { assetNameFromUrl, classifyAsset, extractLessonContentFromPage, isMaterialVisibleInLessonScope } from '../../core/extractors/assets';
+import { assetNameFromUrl, classifyAsset, extractLessonContentFromPage } from '../../core/extractors/assets';
 import { Logger } from '../../core/logger/logger';
 import type { Asset, CourseManifest, CourseRef, LessonManifest, PlatformAdapter, RuntimeContext } from '../../core/types';
 import { slugify } from '../../core/utils/slug';
@@ -130,12 +131,30 @@ async function moduleNameFromPage(page: Page, fallback: string): Promise<string>
 
 async function lessonLinksFromModulePage(page: Page): Promise<Array<{ name: string; url: string }>> {
   const links = await page.evaluate(() => {
+    const deriveLessonName = (anchor: HTMLAnchorElement): string => {
+      const explicitTitle =
+        anchor.getAttribute('title')?.trim() ||
+        anchor.getAttribute('aria-label')?.trim() ||
+        anchor.querySelector<HTMLElement>('h1, h2, h3, h4, strong, [class*="title"], [class*="name"]')?.innerText?.trim();
+      if (explicitTitle) return explicitTitle.replace(/\s+/g, ' ').trim();
+
+      const lines = (anchor.textContent ?? '')
+        .split('\n')
+        .map((line) => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+      const aulaLine = lines.find((line) => /aula\s*\d+/i.test(line));
+      if (aulaLine) return aulaLine;
+      const shortest = [...lines].sort((a, b) => a.length - b.length)[0];
+      if (shortest) return shortest;
+      return '';
+    };
+
     const result: Array<{ name: string; href: string }> = [];
     for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))) {
       const href = anchor.href;
       if (!/\/curso\/.*\/aula-/i.test(href)) continue;
       result.push({
-        name: (anchor.textContent ?? '').replace(/\s+/g, ' ').trim().replace(/^lesson banner\s*/i, ''),
+        name: deriveLessonName(anchor).replace(/^lesson banner\s*/i, ''),
         href
       });
       if (result.length >= 500) break;
@@ -245,7 +264,233 @@ function watchMaterialResponses(page: Page): { stop(): void; assets(): Asset[] }
   };
 }
 
-async function mergeMaterialAssets(assets: Asset[], links: string[], apiAssets: Asset[]): Promise<void> {
+interface DomMaterialsProbe {
+  names: string[];
+  debug: {
+    lessonName: string;
+    pageUrl: string;
+    headingText: string | null;
+    containerTag: string | null;
+    containerClass: string | null;
+    candidateCount: number;
+    rawCandidates: Array<{ tag: string; className: string; text: string }>;
+  };
+}
+
+async function stabilizeMaterialsPanel(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
+    const heading = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6, p, strong'))
+      .find((el) => /material complementar/i.test(normalize(el.innerText || el.textContent || '')));
+    if (!heading) return;
+
+    const isScrollable = (el: HTMLElement) => el.scrollHeight > el.clientHeight + 8;
+    let scrollable: HTMLElement | null = null;
+    for (let node: HTMLElement | null = heading.parentElement; node; node = node.parentElement) {
+      if (isScrollable(node)) {
+        scrollable = node;
+        break;
+      }
+    }
+    if (!scrollable) return;
+
+    const target = scrollable;
+    target.scrollTop = target.scrollHeight;
+    target.scrollTop = 0;
+  });
+  await page.waitForTimeout(200);
+}
+
+async function extractDomMaterialNames(page: Page, lessonName: string): Promise<DomMaterialsProbe> {
+  const pageUrl = page.url();
+  const probe = await page.evaluate((currentLessonName) => {
+    const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
+    const lessonPattern = /aula\s*\d+/i;
+    const uiNoisePattern =
+      /\b(in[ií]cio|favoritos|comunidade|conclu[ií]d[ao]|ir para|pr[oó]ximo m[oó]dulo|curtir|coment[áa]rios|d[uú]vidas)\b/i;
+    const isVisible = (el: HTMLElement) => {
+      if (!el.isConnected) return false;
+      if (el.closest('script, style, noscript, template')) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const materialHeadingCandidates = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6, p, strong'))
+      .filter((el) => isVisible(el))
+      .filter((el) => /material complementar/i.test(normalize(el.innerText || el.textContent || '')))
+      .sort((a, b) => {
+        const lenA = normalize(a.innerText || a.textContent || '').length;
+        const lenB = normalize(b.innerText || b.textContent || '').length;
+        return lenA - lenB;
+      });
+    const heading = materialHeadingCandidates[0] ?? null;
+    if (!heading) {
+      return {
+        names: [],
+        headingText: null,
+        containerTag: null,
+        containerClass: null,
+        candidateCount: 0,
+        rawCandidates: []
+      };
+    }
+
+    const hasMaterialLikeChildren = (el: HTMLElement) =>
+      el.querySelectorAll(
+        'button, a, [role="button"], li, [data-testid*="material"], [class*="material"], [class*="download"], [aria-label*="download"]'
+      ).length > 0;
+
+    let container: HTMLElement | null = null;
+    for (let sibling = heading.nextElementSibling as HTMLElement | null; sibling; sibling = sibling.nextElementSibling as HTMLElement | null) {
+      if (!isVisible(sibling)) continue;
+      const text = normalize(sibling.innerText || sibling.textContent || '');
+      if (!text) continue;
+      if (/coment[áa]rios|d[uú]vidas/i.test(text)) continue;
+      if (hasMaterialLikeChildren(sibling)) {
+        container = sibling;
+        break;
+      }
+    }
+    if (!container && heading.parentElement && hasMaterialLikeChildren(heading.parentElement)) {
+      container = heading.parentElement;
+    }
+    if (!container) {
+      container = heading.parentElement ?? heading.closest('section, article, aside, div') ?? document.body;
+    }
+
+    const candidates = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        'button, a, [role="button"], li, [data-testid*="material"], [class*="material"], [class*="download"], [aria-label*="download"]'
+      )
+    );
+    const names: string[] = [];
+    const seen = new Set<string>();
+    const rawCandidates: Array<{ tag: string; className: string; text: string }> = [];
+
+    for (const element of candidates) {
+      const line = normalize(element.innerText || element.textContent || '')
+        .replace(/^material complementar\s*/i, '');
+      rawCandidates.push({
+        tag: element.tagName,
+        className: (element.getAttribute('class') ?? '').slice(0, 200),
+        text: line.slice(0, 300)
+      });
+      if (!line || uiNoisePattern.test(line)) continue;
+      if (/^material complementar$/i.test(line)) continue;
+      if (line.length < 4 || line.length > 220) continue;
+      const key = line.toLowerCase();
+      if (seen.has(key)) continue;
+      if (lessonPattern.test(line) && !/\.(pdf|zip|xlsx|xls|doc|docx|ppt|pptx|mp3|mp4)\b/i.test(line)) continue;
+      seen.add(key);
+      names.push(line);
+    }
+
+    // Fallback estrutural no container local, sem varrer página inteira.
+    if (names.length === 0) {
+      const rows = Array.from(container.querySelectorAll<HTMLElement>('div, span, p, strong'))
+        .map((el) => normalize(el.innerText || el.textContent || ''))
+        .filter(Boolean)
+        .filter((line) => !uiNoisePattern.test(line))
+        .filter((line) => !/^material complementar$/i.test(line))
+        .filter((line) => line.length >= 4 && line.length <= 220)
+        .filter((line) => !lessonPattern.test(line) || /\.(pdf|zip|xlsx|xls|doc|docx|ppt|pptx|mp3|mp4)\b/i.test(line));
+      for (const row of rows) {
+        const key = row.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        names.push(row);
+      }
+    }
+
+    return {
+      names,
+      headingText: normalize(heading.innerText || heading.textContent || ''),
+      containerTag: container.tagName,
+      containerClass: (container.getAttribute('class') ?? '').slice(0, 200),
+      candidateCount: candidates.length,
+      rawCandidates
+    };
+  }, lessonName);
+
+  return {
+    names: probe.names,
+    debug: {
+      lessonName,
+      pageUrl,
+      headingText: probe.headingText,
+      containerTag: probe.containerTag,
+      containerClass: probe.containerClass,
+      candidateCount: probe.candidateCount,
+      rawCandidates: probe.rawCandidates
+    }
+  };
+}
+
+async function ensureOnExpectedLessonPage(
+  page: Page,
+  lessonUrl: string,
+  logger: Logger,
+  courseUrl?: string
+): Promise<void> {
+  const expected = new URL(lessonUrl);
+  let current = new URL(page.url());
+  let samePath = current.pathname === expected.pathname;
+  if (samePath) return;
+
+  await logger.log('RETRY', 'lesson page mismatch, forcing direct lesson navigation', {
+    expected: expected.href,
+    current: current.href
+  });
+  await page.goto(lessonUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await waitForHydration(page);
+
+  current = new URL(page.url());
+  samePath = current.pathname === expected.pathname;
+  if (samePath) return;
+
+  if (courseUrl) {
+    await logger.log('RETRY', 'lesson page still mismatched after direct goto, retrying via course flow', {
+      expected: expected.href,
+      current: current.href
+    });
+    await gotoLessonFromCourseFlow(page, lessonUrl, courseUrl);
+    await waitForHydration(page);
+    current = new URL(page.url());
+    samePath = current.pathname === expected.pathname;
+    if (samePath) return;
+  }
+
+  throw new Error(`Unable to lock lesson context. Expected ${expected.pathname}, got ${current.pathname}`);
+}
+
+async function saveDomMaterialsDebug(debug: DomMaterialsProbe['debug']): Promise<void> {
+  if (process.env.MATERIALS_DOM_DEBUG !== '1') return;
+  const dir = path.join('storage', 'logs', 'dom-materials-debug');
+  await fs.ensureDir(dir);
+  const safeLesson = slugify(debug.lessonName).slice(0, 80) || 'lesson';
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = path.join(dir, `${stamp}-${safeLesson}.json`);
+  await fs.writeJson(file, debug, { spaces: 2 });
+}
+
+function buildCanonicalAssetsFromDomNames(domMaterialNames: string[]): Asset[] {
+  return domMaterialNames.map((name) => ({
+    type: classifyAsset(name),
+    name: assetNameFromUrl(name, name),
+    url: `unresolved://${encodeURIComponent(name)}`,
+    sha256: null,
+    status: 'failed',
+    uploadStatus: 'pending',
+    lastError: 'Material appears in lesson DOM, but no downloadable URL was captured yet.'
+  }));
+}
+
+function enrichCanonicalAssetsWithApi(
+  assets: Asset[],
+  links: string[],
+  apiAssets: Asset[]
+): { matchedCount: number; discardedApiNames: string[] } {
+  let matchedCount = 0;
+  const discardedApiNames: string[] = [];
   for (const apiAsset of apiAssets) {
     const existing = assets.find(
       (asset) =>
@@ -253,20 +498,49 @@ async function mergeMaterialAssets(assets: Asset[], links: string[], apiAssets: 
         comparableMaterialName(asset.name) === comparableMaterialName(assetNameFromUrl(apiAsset.url, apiAsset.name))
     );
 
-    if (existing) {
-      existing.type = apiAsset.type;
-      existing.name = apiAsset.name;
-      existing.url = apiAsset.url;
-      existing.status = apiAsset.status;
-      existing.lastError = undefined;
-    } else {
-      assets.push(apiAsset);
+    if (!existing) {
+      discardedApiNames.push(apiAsset.name);
+      continue;
     }
+
+    existing.type = apiAsset.type;
+    existing.name = apiAsset.name;
+    existing.url = apiAsset.url;
+    existing.status = apiAsset.status;
+    existing.lastError = undefined;
+    matchedCount += 1;
 
     if (apiAsset.type === 'external-link' && /drive\.google\.com|docs\.google\.com/i.test(apiAsset.url)) {
       links.push(apiAsset.url);
     }
   }
+  return { matchedCount, discardedApiNames };
+}
+
+function buildCanonicalAssetsFromApi(apiAssets: Asset[]): Asset[] {
+  const seen = new Set<string>();
+  const canonical: Asset[] = [];
+  for (const asset of apiAssets) {
+    const key = `${comparableMaterialName(asset.name)}|${asset.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    canonical.push({
+      ...asset,
+      status: asset.type === 'external-link' ? 'skipped' : 'pending',
+      uploadStatus: 'pending'
+    });
+  }
+  return canonical;
+}
+
+function chooseMaterialsSource(params: {
+  domCount: number;
+  apiCount: number;
+  matchedCountIfDom: number;
+}): { source: 'dom' | 'api-fallback'; reason?: string } {
+  const { domCount } = params;
+  if (domCount === 0) return { source: 'api-fallback', reason: 'dom-empty -> api-fallback' };
+  return { source: 'dom' };
 }
 
 async function extractLessonInIsolatedPage(
@@ -284,28 +558,81 @@ async function extractLessonInIsolatedPage(
     const work = (async () => {
       await lessonPage.goto(lessonUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
       await waitForHydration(lessonPage);
+      await ensureOnExpectedLessonPage(lessonPage, lessonUrl, logger);
 
       const materialWatcher = watchMaterialResponses(lessonPage);
       try {
         await expandAccordions(lessonPage);
         await scrollToBottom(lessonPage);
+        await stabilizeMaterialsPanel(lessonPage);
         await lessonPage.waitForTimeout(800);
+        await ensureOnExpectedLessonPage(lessonPage, lessonUrl, logger);
 
         const content = await extractLessonContentFromPage(lessonPage, lessonName);
-
-        const pageText = await lessonPage.evaluate(() => document.body.innerText).catch(() => '');
         const apiAssets = materialWatcher.assets();
-        const visibleApiAssets = apiAssets.filter((asset) =>
-          isMaterialVisibleInLessonScope(asset.name, pageText)
-        );
-        await logger.log(
-          'DISCOVER',
-          `API materials filtered ${apiAssets.length} -> ${visibleApiAssets.length} visible`,
-          { lesson: lessonName }
-        );
+        const domProbe = await extractDomMaterialNames(lessonPage, lessonName);
+        await saveDomMaterialsDebug(domProbe.debug);
+        const domMaterialNames = domProbe.names;
+        const domCanonicalAssets = buildCanonicalAssetsFromDomNames(domMaterialNames);
+        const domEnrichmentProbe =
+          domMaterialNames.length > 0
+            ? enrichCanonicalAssetsWithApi(
+                domCanonicalAssets.map((asset) => ({ ...asset })),
+                [...content.links],
+                apiAssets
+              )
+            : { matchedCount: 0, discardedApiNames: [] as string[] };
+        const sourceDecision = chooseMaterialsSource({
+          domCount: domMaterialNames.length,
+          apiCount: apiAssets.length,
+          matchedCountIfDom: domEnrichmentProbe.matchedCount
+        });
+        const materialsSource = sourceDecision.source;
+        const canonicalAssets =
+          materialsSource === 'dom'
+            ? buildCanonicalAssetsFromDomNames(domMaterialNames)
+            : buildCanonicalAssetsFromApi(apiAssets);
+        const { matchedCount, discardedApiNames } =
+          materialsSource === 'dom'
+            ? enrichCanonicalAssetsWithApi(canonicalAssets, content.links, apiAssets)
+            : { matchedCount: apiAssets.length, discardedApiNames: [] as string[] };
+        if (process.env.DOWNLOAD_DEBUG === '1') {
+          await logger.log('DISCOVER', 'dom-first materials audit', {
+            lesson: lessonName,
+            materialsSource,
+            domMaterialsCount: domMaterialNames.length,
+            apiMaterialsCapturedCount: apiAssets.length,
+            apiMatchedToDomCount: matchedCount,
+            apiDiscardedNotInDomCount: discardedApiNames.length,
+            discardedApiNames,
+            fallbackReason: sourceDecision.reason
+          });
+        } else {
+          await logger.log('DISCOVER', 'dom-first materials audit', {
+            lesson: lessonName,
+            materialsSource,
+            domMaterialsCount: domMaterialNames.length,
+            apiMaterialsCapturedCount: apiAssets.length,
+            apiMatchedToDomCount: matchedCount,
+            apiDiscardedNotInDomCount: discardedApiNames.length,
+            fallbackReason: sourceDecision.reason
+          });
+        }
 
-        await mergeMaterialAssets(content.assets, content.links, visibleApiAssets);
-        await resolveClickableMaterials(lessonPage, content.assets, logger);
+        const beforeClickResolved = canonicalAssets.filter((asset) => !asset.url.startsWith('unresolved://')).length;
+        await resolveClickableMaterials(lessonPage, canonicalAssets, logger);
+        const resolvedCount = canonicalAssets.filter((asset) => !asset.url.startsWith('unresolved://')).length;
+        const unresolvedCount = canonicalAssets.filter((asset) => asset.url.startsWith('unresolved://')).length;
+        const clickResolvedCount = Math.max(0, resolvedCount - beforeClickResolved);
+        await logger.log('DISCOVER', 'dom-first materials final', {
+          lesson: lessonName,
+          materialsSource,
+          finalMaterialsCount: canonicalAssets.length,
+          resolvedCount,
+          unresolvedCount,
+          clickResolvedCount
+        });
+        content.assets = canonicalAssets;
         return content;
       } finally {
         materialWatcher.stop();
@@ -329,7 +656,9 @@ async function extractLessonInIsolatedPage(
 
 async function resolveClickableMaterials(page: Page, assets: Asset[], logger: Logger): Promise<void> {
   for (const asset of assets.filter(isResolvableMaterial)) {
-    const material = page.getByText(asset.name, { exact: true }).first();
+    const material = page
+      .locator('button, a, [role="button"], li, div, span', { hasText: asset.name })
+      .first();
     if ((await material.count()) === 0) {
       asset.lastError = `Material appears in extracted text, but clickable element was not found: ${asset.name}`;
       await logger.log('FAILED', `material click target not found ${asset.name}`, { lessonUrl: page.url() });
@@ -380,27 +709,82 @@ async function resolveClickableMaterials(page: Page, assets: Asset[], logger: Lo
 async function extractContentFromCurrentLessonPage(
   page: Page,
   materialWatcher: ReturnType<typeof watchMaterialResponses>,
+  lessonUrl: string,
   lessonName: string,
   logger: Logger
 ): Promise<Awaited<ReturnType<typeof extractLessonContentFromPage>>> {
+  await ensureOnExpectedLessonPage(page, lessonUrl, logger, process.env.EXTRACT_COURSE_URL);
   await waitForHydration(page);
   await expandAccordions(page);
   await scrollToBottom(page);
+  await stabilizeMaterialsPanel(page);
+  await ensureOnExpectedLessonPage(page, lessonUrl, logger, process.env.EXTRACT_COURSE_URL);
   const content = await extractLessonContentFromPage(page, lessonName);
 
-  const pageText = await page.evaluate(() => document.body.innerText).catch(() => '');
   const apiAssets = materialWatcher.assets();
-  const visibleApiAssets = apiAssets.filter((asset) =>
-    isMaterialVisibleInLessonScope(asset.name, pageText)
-  );
-  await logger.log(
-    'DISCOVER',
-    `API materials filtered ${apiAssets.length} -> ${visibleApiAssets.length} visible`,
-    { lesson: lessonName }
-  );
+  const domProbe = await extractDomMaterialNames(page, lessonName);
+  await saveDomMaterialsDebug(domProbe.debug);
+  const domMaterialNames = domProbe.names;
+  const domCanonicalAssets = buildCanonicalAssetsFromDomNames(domMaterialNames);
+  const domEnrichmentProbe =
+    domMaterialNames.length > 0
+      ? enrichCanonicalAssetsWithApi(
+          domCanonicalAssets.map((asset) => ({ ...asset })),
+          [...content.links],
+          apiAssets
+        )
+      : { matchedCount: 0, discardedApiNames: [] as string[] };
+  const sourceDecision = chooseMaterialsSource({
+    domCount: domMaterialNames.length,
+    apiCount: apiAssets.length,
+    matchedCountIfDom: domEnrichmentProbe.matchedCount
+  });
+  const materialsSource = sourceDecision.source;
+  const canonicalAssets =
+    materialsSource === 'dom'
+      ? buildCanonicalAssetsFromDomNames(domMaterialNames)
+      : buildCanonicalAssetsFromApi(apiAssets);
+  const { matchedCount, discardedApiNames } =
+    materialsSource === 'dom'
+      ? enrichCanonicalAssetsWithApi(canonicalAssets, content.links, apiAssets)
+      : { matchedCount: apiAssets.length, discardedApiNames: [] as string[] };
+  if (process.env.DOWNLOAD_DEBUG === '1') {
+    await logger.log('DISCOVER', 'dom-first materials audit', {
+      lesson: lessonName,
+      materialsSource,
+      domMaterialsCount: domMaterialNames.length,
+      apiMaterialsCapturedCount: apiAssets.length,
+      apiMatchedToDomCount: matchedCount,
+      apiDiscardedNotInDomCount: discardedApiNames.length,
+      discardedApiNames,
+      fallbackReason: sourceDecision.reason
+    });
+  } else {
+    await logger.log('DISCOVER', 'dom-first materials audit', {
+      lesson: lessonName,
+      materialsSource,
+      domMaterialsCount: domMaterialNames.length,
+      apiMaterialsCapturedCount: apiAssets.length,
+      apiMatchedToDomCount: matchedCount,
+      apiDiscardedNotInDomCount: discardedApiNames.length,
+      fallbackReason: sourceDecision.reason
+    });
+  }
 
-  await mergeMaterialAssets(content.assets, content.links, visibleApiAssets);
-  await resolveClickableMaterials(page, content.assets, logger);
+  const beforeClickResolved = canonicalAssets.filter((asset) => !asset.url.startsWith('unresolved://')).length;
+  await resolveClickableMaterials(page, canonicalAssets, logger);
+  const resolvedCount = canonicalAssets.filter((asset) => !asset.url.startsWith('unresolved://')).length;
+  const unresolvedCount = canonicalAssets.filter((asset) => asset.url.startsWith('unresolved://')).length;
+  const clickResolvedCount = Math.max(0, resolvedCount - beforeClickResolved);
+  await logger.log('DISCOVER', 'dom-first materials final', {
+    lesson: lessonName,
+    materialsSource,
+    finalMaterialsCount: canonicalAssets.length,
+    resolvedCount,
+    unresolvedCount,
+    clickResolvedCount
+  });
+  content.assets = canonicalAssets;
   return content;
 }
 
@@ -758,7 +1142,8 @@ export function createTheMembersAdapter(): PlatformAdapter {
           } else {
             await page.goto(lessonUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
           }
-          return await extractContentFromCurrentLessonPage(page, materialWatcher, lessonName ?? 'Unknown lesson', logger);
+          await ensureOnExpectedLessonPage(page, lessonUrl, logger, courseUrl ?? undefined);
+          return await extractContentFromCurrentLessonPage(page, materialWatcher, lessonUrl, lessonName ?? 'Unknown lesson', logger);
         } catch (error) {
           const courseUrl = process.env.EXTRACT_COURSE_URL;
           if (process.env.EXTRACT_HOMEPAGE_FIRST === '1' || !courseUrl) throw error;
@@ -768,7 +1153,8 @@ export function createTheMembersAdapter(): PlatformAdapter {
             error: error instanceof Error ? error.message : String(error)
           });
           await gotoLessonFromCourseFlow(page, lessonUrl, courseUrl);
-          return await extractContentFromCurrentLessonPage(page, materialWatcher, lessonName ?? 'Unknown lesson', logger);
+          await ensureOnExpectedLessonPage(page, lessonUrl, logger, courseUrl ?? undefined);
+          return await extractContentFromCurrentLessonPage(page, materialWatcher, lessonUrl, lessonName ?? 'Unknown lesson', logger);
         } finally {
           materialWatcher.stop();
         }

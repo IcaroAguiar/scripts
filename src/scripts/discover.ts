@@ -2,6 +2,11 @@ import fs from 'fs-extra';
 import path from 'node:path';
 import { Logger } from '../core/logger/logger';
 import { slugify } from '../core/utils/slug';
+import {
+  filterCoursesByProducts,
+  loadProductsFromJson,
+  parseProductsArg
+} from './discover-products';
 import { ensureRuntimeDirs, manifestStore, platformAdapter, runtimeContext } from './common';
 
 const context = runtimeContext(true);
@@ -11,7 +16,27 @@ const adapter = platformAdapter();
 const store = manifestStore(context);
 const logger = new Logger(context.logsDir);
 
-const courses = await adapter.discoverCourses(context);
+const discoveredCourses = await adapter.discoverCourses(context);
+const cliProducts = parseProductsArg(process.argv.slice(2));
+const productsSource = cliProducts.length > 0 ? 'cli' : 'json';
+const selectedProducts =
+  cliProducts.length > 0 ? cliProducts : (await loadProductsFromJson()).products;
+const { filteredCourses: courses, missingProducts } = filterCoursesByProducts(discoveredCourses, selectedProducts);
+
+await logger.log('DISCOVER', `course filter summary`, {
+  source: productsSource,
+  totalFound: discoveredCourses.length,
+  totalFiltered: courses.length,
+  selectedProducts: selectedProducts.length,
+  missingProductsCount: missingProducts.length,
+  missingProducts
+});
+
+if (courses.length === 0) {
+  await logger.log('SKIPPED', 'no courses matched selected products; skipping discovery run');
+  process.exit(0);
+}
+
 await store.saveIndex(adapter.platform, courses);
 const forceDiscover = process.env.DISCOVER_FORCE === '1';
 

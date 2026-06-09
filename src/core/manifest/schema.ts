@@ -16,6 +16,7 @@ export const assetSchema = z.object({
 
 export const lessonManifestSchema = z.object({
   name: z.string().min(1),
+  displayName: z.string().min(1).optional(),
   index: z.number().int().positive(),
   url: z.string().min(1),
   slug: z.string().min(1),

@@ -10,3 +10,4 @@ storage/drive-export/
 test-results/
 playwright-report/
 codex-scripts/
+storage/*
