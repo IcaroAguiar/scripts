@@ -16,8 +16,18 @@ import {
   type InteractiveMode,
 } from "./interactive-model";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ConsumoPreflightReport } from "./consumo-execute";
 import { normalizeLocalPathInput } from "./path-utils";
+import {
+  buildProfileV2,
+  validateGroupId,
+  validateGroupName,
+  validatePeriodicityValue,
+  validateStartDate,
+  validateTenantId,
+  writeProfileFile,
+} from "./profile-builder";
 import { deriveMigrationOutputPaths } from "./output-paths";
 import { computeAccessEndsAt, describeRemaining } from "./period";
 import { formatAnyPlanForTui } from "./plan-display";
@@ -36,7 +46,14 @@ import type { TetraDevPreflightReport } from "./tetra-dev-execute";
 type WizardStep =
   | "mode"
   | "input"
+  | "profileChoice"
   | "profile"
+  | "profileName"
+  | "tenantId"
+  | "environment"
+  | "groupMode"
+  | "groupName"
+  | "groupId"
   | "startsAt"
   | "periodicity"
   | "periodicityValue"
@@ -47,6 +64,14 @@ type WizardStep =
 type WizardState = Partial<InteractiveAnswers> & {
   step: WizardStep;
   isConsumoProfile?: boolean;
+  profileChoice?: "existing" | "create";
+  profileName?: string;
+  tenantId?: string;
+  environmentChoice?: "local" | "dev" | "production";
+  groupMode?: "create" | "existing";
+  groupName?: string;
+  groupId?: string;
+  fieldError?: string;
 };
 
 export type InteractiveMigrationDependencies = {
@@ -188,6 +213,12 @@ function renderWizard(
 
   if (state.step === "mode") {
     screen.add(buildModeSelect(renderer, state, rerender));
+  } else if (state.step === "profileChoice") {
+    screen.add(buildProfileChoiceSelect(renderer, state, rerender));
+  } else if (state.step === "environment") {
+    screen.add(buildEnvironmentSelect(renderer, state, rerender));
+  } else if (state.step === "groupMode") {
+    screen.add(buildGroupModeSelect(renderer, state, rerender));
   } else if (state.step === "periodicity") {
     screen.add(buildPeriodicitySelect(renderer, state, rerender));
   } else if (state.step === "catalog") {
@@ -207,12 +238,17 @@ function buildProgress(renderer: CliRenderer, state: WizardState): TextRenderabl
   const modeLabel = getModeLabel(state.mode);
   const paths = deriveMigrationOutputPaths(state.input || DEFAULT_INPUT);
   const windowLine = describeEnrollmentWindow(state);
+  const profileLine =
+    state.profileChoice === "create" && !state.isConsumoProfile
+      ? `Perfil: novo (${[state.profileName, state.tenantId, state.environmentChoice, state.groupMode === "existing" ? `grupo ${state.groupId ?? "?"}` : state.groupName].filter(Boolean).join(" | ") || "em preenchimento"})`
+      : `Perfil: ${state.profile || "(pendente)"}${state.isConsumoProfile ? " [themembers-consumo]" : ""}`;
   return new TextRenderable(renderer, {
     id: "progress",
     content: [
+      ...(state.fieldError ? [`>> ${state.fieldError}`] : []),
       `Modo: ${modeLabel}`,
       `Planilha local: ${state.input || "(pendente)"}`,
-      `Perfil: ${state.profile || "(pendente)"}${state.isConsumoProfile ? " [themembers-consumo]" : ""}`,
+      profileLine,
       ...(windowLine ? [windowLine] : []),
       ...(state.isConsumoProfile
         ? [`Catalogo: ${state.syncCatalog ? "sincronizar do tetra-products" : "usar mapa local"}`]
@@ -272,7 +308,7 @@ function buildTextInput(
   state: WizardState,
   rerender: () => void,
 ): BoxRenderable {
-  const field = getCurrentField(state.step);
+  const field = getCurrentField(state.step, state);
   const box = new BoxRenderable(renderer, {
     id: "input-box",
     width: "100%",
@@ -305,13 +341,40 @@ function buildTextInput(
     cursorColor: "#7dd3fc",
   });
 
-  input.on(InputRenderableEvents.ENTER, () => {
+  input.on(InputRenderableEvents.ENTER, async () => {
     const value = input.value.trim() || field.defaultValue;
+
+    if (field.validate) {
+      const error = field.validate(value);
+      if (error) {
+        state.fieldError = error;
+        rerender();
+        return;
+      }
+    }
+    delete state.fieldError;
+
     setStateValue(state, field.key, value);
     if (state.step === "profile") {
       detectConsumoProfile(state);
     }
+
+    const shouldSaveProfile =
+      state.step === "periodicityValue" && state.profileChoice === "create";
     state.step = nextStep(state.step, state);
+
+    if (shouldSaveProfile) {
+      // Renderiza o proximo passo imediatamente e grava o perfil em seguida;
+      // o rerender pos-save atualiza o painel com o caminho salvo.
+      rerender();
+      try {
+        await saveCreatedProfile(state);
+      } catch (error) {
+        state.fieldError = `Falha ao gravar o perfil: ${error instanceof Error ? error.message : String(error)}`;
+        state.step = "periodicityValue";
+      }
+    }
+
     rerender();
   });
 
@@ -707,21 +770,25 @@ function replaceScreen(renderer: CliRenderer): void {
   }
 }
 
-function getCurrentField(step: WizardStep): {
-  key: keyof Pick<
-    InteractiveAnswers,
-    "input" | "profile" | "envFile" | "startsAt" | "periodicityValue"
-  >;
+type WizardTextKey =
+  | "input"
+  | "profile"
+  | "envFile"
+  | "startsAt"
+  | "periodicityValue"
+  | "profileName"
+  | "tenantId"
+  | "groupName"
+  | "groupId";
+
+type WizardField = {
+  key: WizardTextKey;
   prompt: string;
   defaultValue: string;
-} {
-  if (step === "input") {
-    return {
-      key: "input",
-      prompt: "Planilha local CSV/XLSX (abs/relativo, ~, aspas, espacos)",
-      defaultValue: DEFAULT_INPUT,
-    };
-  }
+  validate?: (value: string) => string | undefined;
+};
+
+function getCurrentField(step: WizardStep, state: WizardState): WizardField {
   if (step === "profile") {
     return {
       key: "profile",
@@ -730,11 +797,48 @@ function getCurrentField(step: WizardStep): {
     };
   }
 
+  if (step === "profileName") {
+    return {
+      key: "profileName",
+      prompt: "Nome desta migracao (ex.: TheMembers Periodo 2)",
+      defaultValue: "",
+      validate: (value) => (value.trim() ? undefined : "Informe um nome para identificar o perfil."),
+    };
+  }
+
+  if (step === "tenantId") {
+    return {
+      key: "tenantId",
+      prompt: "Tenant de destino (ex.: tenant_local_tetra)",
+      defaultValue: "tenant_local_tetra",
+      validate: validateTenantId,
+    };
+  }
+
+  if (step === "groupName") {
+    return {
+      key: "groupName",
+      prompt: "Nome do grupo de acesso a criar (ex.: Migracao Periodo 2)",
+      defaultValue: state.profileName ? `Migracao ${state.profileName}` : "",
+      validate: validateGroupName,
+    };
+  }
+
+  if (step === "groupId") {
+    return {
+      key: "groupId",
+      prompt: "Id do grupo de acesso existente",
+      defaultValue: "",
+      validate: validateGroupId,
+    };
+  }
+
   if (step === "startsAt") {
     return {
       key: "startsAt",
       prompt: "Inicio da matricula desta planilha (YYYY-MM-DD, America/Sao_Paulo)",
       defaultValue: "",
+      validate: validateStartDate,
     };
   }
 
@@ -743,6 +847,7 @@ function getCurrentField(step: WizardStep): {
       key: "periodicityValue",
       prompt: "Multiplicador da periodicidade (ex.: 1 = 1 ano/mes/dia)",
       defaultValue: "1",
+      validate: validatePeriodicityValue,
     };
   }
 
@@ -762,14 +867,156 @@ function getCurrentField(step: WizardStep): {
 }
 
 function nextStep(step: WizardStep, state: WizardState): WizardStep {
-  if (step === "input") return "profile";
+  if (step === "input") return "profileChoice";
   if (step === "profile") return state.isConsumoProfile ? "startsAt" : "mode";
+  if (step === "profileName") return "tenantId";
+  if (step === "tenantId") return "environment";
+  if (step === "groupName" || step === "groupId") return "startsAt";
   if (step === "startsAt") return "periodicity";
   if (step === "periodicity") return "periodicityValue";
-  if (step === "periodicityValue") return "catalog";
+  if (step === "periodicityValue") return state.profileChoice === "create" ? "catalog" : "catalog";
   if (step === "catalog") return "mode";
   if (step === "envFile") return "confirm";
   return "confirm";
+}
+
+async function saveCreatedProfile(state: WizardState): Promise<void> {
+  const periodicity = state.periodicity ?? "YEARLY";
+  const periodicityValue = Number.parseInt(state.periodicityValue ?? "1", 10) || 1;
+  const profile = buildProfileV2({
+    name: state.profileName ?? "Migracao TheMembers",
+    tenantId: state.tenantId ?? "",
+    environment: state.environmentChoice ?? "local",
+    groupMode: state.groupMode ?? "create",
+    ...(state.groupName ? { groupName: state.groupName } : {}),
+    ...(state.groupId ? { groupId: state.groupId } : {}),
+    accessStartsAt: state.startsAt ?? "",
+    periodicity,
+    periodicityValue,
+  });
+
+  const storageDir = join(process.cwd(), "storage");
+  const savedPath = await writeProfileFile(
+    storageDir,
+    state.profileName ?? "migracao",
+    profile,
+  );
+  state.profile = savedPath;
+  state.isConsumoProfile = true;
+}
+
+function buildProfileChoiceSelect(
+  renderer: CliRenderer,
+  state: WizardState,
+  rerender: () => void,
+): SelectRenderable {
+  const select = new SelectRenderable(renderer, {
+    id: "control",
+    width: "100%",
+    height: 5,
+    showDescription: true,
+    options: [
+      {
+        name: "Criar novo perfil agora (recomendado)",
+        description: "Responda algumas perguntas e a TUI grava o perfil em storage/ para voce.",
+        value: "create",
+      },
+      {
+        name: "Usar arquivo de perfil existente",
+        description: "Informe o caminho de um perfil JSON ja aprovado.",
+        value: "existing",
+      },
+    ],
+    selectedIndex: state.profileChoice === "existing" ? 1 : 0,
+    selectedBackgroundColor: "#164e63",
+    selectedTextColor: "#ffffff",
+  });
+
+  select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+    state.profileChoice = option.value as "existing" | "create";
+    state.step = state.profileChoice === "create" ? "profileName" : "profile";
+    rerender();
+  });
+
+  return select;
+}
+
+function buildEnvironmentSelect(
+  renderer: CliRenderer,
+  state: WizardState,
+  rerender: () => void,
+): SelectRenderable {
+  const values: Array<"local" | "dev" | "production"> = ["local", "dev", "production"];
+  const select = new SelectRenderable(renderer, {
+    id: "control",
+    width: "100%",
+    height: 6,
+    showDescription: true,
+    options: [
+      {
+        name: "Local",
+        description: "Servicos Tetra rodando na sua maquina (demo/testes).",
+        value: "local",
+      },
+      {
+        name: "Dev",
+        description: "Ambiente de desenvolvimento compartilhado.",
+        value: "dev",
+      },
+      {
+        name: "Producao",
+        description: "Exige arquivo de aprovacao no execute. Use apenas no cutover.",
+        value: "production",
+      },
+    ],
+    selectedIndex: Math.max(0, values.indexOf(state.environmentChoice ?? "local")),
+    selectedBackgroundColor: "#164e63",
+    selectedTextColor: "#ffffff",
+  });
+
+  select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+    state.environmentChoice = option.value as "local" | "dev" | "production";
+    state.step = "groupMode";
+    rerender();
+  });
+
+  return select;
+}
+
+function buildGroupModeSelect(
+  renderer: CliRenderer,
+  state: WizardState,
+  rerender: () => void,
+): SelectRenderable {
+  const select = new SelectRenderable(renderer, {
+    id: "control",
+    width: "100%",
+    height: 5,
+    showDescription: true,
+    options: [
+      {
+        name: "Criar um grupo novo para esta planilha (recomendado)",
+        description: "Um grupo por periodo mantem cada leva organizada e auditavel.",
+        value: "create",
+      },
+      {
+        name: "Vincular a um grupo de acesso existente",
+        description: "Informe o id de um grupo ja criado no tenant.",
+        value: "existing",
+      },
+    ],
+    selectedIndex: state.groupMode === "existing" ? 1 : 0,
+    selectedBackgroundColor: "#164e63",
+    selectedTextColor: "#ffffff",
+  });
+
+  select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+    state.groupMode = option.value as "create" | "existing";
+    state.step = state.groupMode === "create" ? "groupName" : "groupId";
+    rerender();
+  });
+
+  return select;
 }
 
 function buildPeriodicitySelect(
@@ -876,23 +1123,10 @@ function getExecuteStatusMessage(options: MigrationCliOptions): string {
   return "Executando somente o adaptador fake local para o plano que esta na tela.";
 }
 
-function getStateValue(
-  state: WizardState,
-  key: keyof Pick<
-    InteractiveAnswers,
-    "input" | "profile" | "envFile" | "startsAt" | "periodicityValue"
-  >,
-): string | undefined {
+function getStateValue(state: WizardState, key: WizardTextKey): string | undefined {
   return state[key];
 }
 
-function setStateValue(
-  state: WizardState,
-  key: keyof Pick<
-    InteractiveAnswers,
-    "input" | "profile" | "envFile" | "startsAt" | "periodicityValue"
-  >,
-  value: string,
-): void {
+function setStateValue(state: WizardState, key: WizardTextKey, value: string): void {
   state[key] = value;
 }

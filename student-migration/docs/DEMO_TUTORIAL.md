@@ -43,9 +43,14 @@ bun scripts/seed-local-catalog.ts "<caminho da planilha>.csv"
 
 > Confirmação rápida: `GET http://localhost:3336/internal/catalog/course-map` com token de serviço deve listar 15 produtos. O próprio preflight do passo 5 valida isso pra você.
 
-## Passo 4 — Criar o perfil da migração
+## Passo 4 — Perfil da migração (dois jeitos)
 
-Crie `storage/profile.demo.json`:
+**Jeito fácil (recomendado): deixe a TUI criar.** No passo 6, escolha
+"Criar novo perfil agora" e responda as perguntas (nome, tenant, ambiente,
+grupo, data e periodicidade). A TUI valida cada campo, grava o perfil em
+`storage/` e segue o fluxo — você nunca toca em JSON.
+
+**Jeito manual (opcional)**: crie `storage/profile.demo.json`:
 
 ```json
 {
@@ -71,7 +76,7 @@ Crie `storage/profile.demo.json`:
 
 ## Passo 5 — Dry-run primeiro (SEMPRE)
 
-O dry-run valida tudo sem tocar em nenhuma API de escrita. É ele que garante que a demo não falha:
+O dry-run valida tudo sem tocar em nenhuma API de escrita. É ele que garante que a demo não falha. Pela TUI, basta escolher o modo "Dry-run" na primeira passada. Pela linha de comando (se você criou o perfil manualmente ou quer repetir o da TUI):
 
 ```bash
 bun run migrate -- \
@@ -104,9 +109,13 @@ bun run import
 Na tela, siga a ordem (ENTER confirma, ESC sai):
 
 1. **Planilha**: cole o caminho do CSV (aceita `~`, aspas e espaços).
-2. **Perfil**: `./storage/profile.demo.json` — a TUI detecta o layout `themembers-consumo`.
-3. **Início da matrícula**: confirme `2026-01-15` (vem do perfil).
-4. **Periodicidade**: Anual, multiplicador 1 — a TUI mostra a data de fim computada e os dias restantes.
+2. **Perfil**: escolha "Criar novo perfil agora" e responda: nome da migração,
+   tenant (`tenant_local_tetra`), ambiente (Local), grupo ("Criar um grupo novo"
+   + nome). Se já tiver um perfil salvo, escolha "Usar arquivo de perfil
+   existente" e informe o caminho.
+3. **Início da matrícula**: digite `2026-01-15` (formato YYYY-MM-DD — a TUI
+   avisa na hora se a data for inválida).
+4. **Periodicidade**: Anual, multiplicador 1 — a TUI mostra a data de fim computada e os dias restantes, e grava o perfil em `storage/` neste ponto.
 5. **Catálogo**: "Sincronizar do tetra-products agora".
 6. **Modo**: comece com **Dry-run** para mostrar o plano; depois repita com **Execute dev**.
 7. **Env-file**: `./storage/tetra-dev.env` (só no modo dev).

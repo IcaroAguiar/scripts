@@ -340,6 +340,7 @@ describe("interactive command contract", () => {
     };
 
     await submitInput("Planilha local CSV/XLSX", "./fixtures/members-local-smoke.csv");
+		await selectOption("Usar arquivo de perfil existente", 1);
     await submitInput("Caminho do perfil de mapeamento aprovado");
     await selectOption("Execute dev", 2);
     await submitInput("Env-file local opcional", "./storage/tetra-dev.env");
@@ -370,6 +371,138 @@ describe("interactive command contract", () => {
       "preflight",
       "execute:tetra-dev",
     ]);
+
+    mockInput.pressEscape();
+    await finished;
+  });
+
+  test("cria um perfil v2 completo pela TUI, com validacao de campos", async () => {
+    const { renderer, mockInput, waitForFrame, flush } = await createTestRenderer({
+      width: 120,
+      height: 60,
+    });
+    let capturedProfilePath = "";
+    const finished = runInteractiveMigrationWithRenderer(renderer, {
+      prepareMigrationPlan: async (options) => {
+        capturedProfilePath = options.profile ?? "";
+        return {
+          plan: {
+            runId: "run_tui_create",
+            generatedAt: "2026-07-03T12:00:00.000Z",
+            dryRun: true,
+            layout: "themembers-consumo",
+            tenantId: "tenant_local_tetra",
+            environment: "local",
+            accessGroup: {
+              mode: "create",
+              name: "Migracao Periodo Teste",
+              periodicity: "YEARLY",
+              periodicityValue: 1,
+            },
+            enrollmentWindow: {
+              accessStartsAt: "2026-01-15T03:00:00.000Z",
+              accessEndsAt: "2027-01-15T03:00:00.000Z",
+              periodicity: "YEARLY",
+              periodicityValue: 1,
+            },
+            source: {
+              totalRows: 3,
+              memberOperations: 2,
+              plannedEnrollments: 2,
+              plannedProgressWrites: 2,
+              blockedRows: 0,
+              progressOnlyBlockedRows: 0,
+            },
+            blockedReasonCounts: {},
+            catalog: {
+              ambiguousCourseTitles: [],
+              unresolvedCourseTitles: [],
+              unresolvedLessonTitles: [],
+            },
+            operations: [],
+            blockedRows: [],
+          },
+          planPath: "/tmp/tui-create-plan.json",
+          privateContext: {
+            runId: "run_tui_create",
+            tenantId: "tenant_local_tetra",
+            environment: "local",
+            members: [],
+          },
+        } as never;
+      },
+      preflightPreparedMigrationPlan: async () => {
+        throw new Error("nao deve preflight em dry-run");
+      },
+      executePreparedMigrationPlan: async () => {
+        throw new Error("nao deve executar em dry-run");
+      },
+    });
+
+    const submitInput = async (prompt: string, value?: string) => {
+      await waitForFrame((frame) => frame.includes(prompt));
+      const control = getWizardControl(renderer);
+      expect(control).toBeInstanceOf(InputRenderable);
+      if (value !== undefined) {
+        (control as InputRenderable).value = value;
+      }
+      (control as InputRenderable).submit();
+      await flush();
+    };
+
+    const selectOption = async (label: string, moveDown = 0) => {
+      await waitForFrame((frame) => frame.includes(label));
+      const control = getWizardControl(renderer);
+      expect(control).toBeInstanceOf(SelectRenderable);
+      for (let index = 0; index < moveDown; index += 1) {
+        (control as SelectRenderable).moveDown();
+      }
+      (control as SelectRenderable).selectCurrent();
+      await flush();
+    };
+
+    await submitInput("Planilha local CSV/XLSX", "./fixtures/themembers-consumo.csv");
+    await selectOption("Criar novo perfil agora");
+    await submitInput("Nome desta migracao", "Periodo Teste TUI");
+    await submitInput("Tenant de destino", "tenant_local_tetra");
+    await selectOption("Local");
+    await selectOption("Criar um grupo novo");
+    await submitInput("Nome do grupo de acesso a criar", "Migracao Periodo Teste");
+
+    // valida a data: primeiro um valor invalido, que deve manter o passo com erro
+    await submitInput("Inicio da matricula", "15/01/2026");
+    const errorFrame = await waitForFrame((frame) => frame.includes("YYYY-MM-DD (ex.: 2026-01-15)"));
+    expect(errorFrame).toContain(">>");
+    await submitInput("Inicio da matricula", "2026-01-15");
+
+    await selectOption("Anual (YEARLY)");
+    await submitInput("Multiplicador da periodicidade", "1");
+    await selectOption("Usar catalog map local");
+    await selectOption("Dry-run redigido");
+    await selectOption("Rodar agora");
+
+    await waitForFrame((frame) => frame.includes("Revisao do plano"));
+
+    expect(capturedProfilePath).toContain("profile.periodo-teste-tui");
+    const savedProfile = JSON.parse(await readFile(capturedProfilePath, "utf8"));
+    expect(savedProfile).toMatchObject({
+      version: 2,
+      layout: "themembers-consumo",
+      tenantId: "tenant_local_tetra",
+      environment: "local",
+      accessGroup: {
+        mode: "create",
+        name: "Migracao Periodo Teste",
+        periodicity: "YEARLY",
+        periodicityValue: 1,
+      },
+      enrollmentWindow: {
+        accessStartsAt: "2026-01-15",
+        periodicity: "YEARLY",
+        periodicityValue: 1,
+      },
+    });
+    await rm(capturedProfilePath, { force: true });
 
     mockInput.pressEscape();
     await finished;
