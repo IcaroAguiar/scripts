@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "name": "Local smoke Tetra profile",
+  "tenantId": "tenant_local_tetra",
+  "environment": "dev",
+  "fields": {
+    "email": "E-mail",
+    "name": "Aluno",
+    "phone": "Telefone",
+    "accessGroup": "Grupo",
+    "product": "Curso",
+    "course": "Curso",
+    "lesson": "Aula",
+    "progressPercent": "Porcentagem da Aula",
+    "completed": "Concluida",
+    "accessedAt": "Data de Acesso"
+  },
+  "mappings": {
+    "accessGroups": {
+      "grupo smoke local": {
+        "id": "smoke-access-group",
+        "name": "Grupo Smoke Local"
+      }
+    },
+    "products": {
+      "curso smoke local": {
+        "id": "smoke-course-section",
+        "name": "Curso Smoke Local",
+        "type": "COURSE",
+        "courseId": "smoke-course-section"
+      }
+    }
+  }
+}

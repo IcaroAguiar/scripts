@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "name": "Fake Tetra profile",
+  "tenantId": "tenant_fake_001",
+  "environment": "dev",
+  "fields": {
+    "email": "E-mail",
+    "name": "Aluno",
+    "phone": "Telefone",
+    "accessGroup": "Grupo",
+    "product": "Curso",
+    "course": "Curso",
+    "lesson": "Aula",
+    "progressPercent": "Porcentagem da Aula",
+    "completed": "Concluida",
+    "accessedAt": "Data de Acesso"
+  },
+  "mappings": {
+    "accessGroups": {
+      "grupo fake": {
+        "id": "ag_fake_001",
+        "name": "Grupo Fake"
+      }
+    },
+    "products": {
+      "curso fake": {
+        "id": "prod_fake_001",
+        "name": "Curso Fake",
+        "type": "COURSE",
+        "courseId": "course_fake_001"
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "layout": "themembers-consumo",
+  "name": "TheMembers consumo - smoke local",
+  "tenantId": "tenant_local_tetra",
+  "environment": "local",
+  "accessGroup": {
+    "mode": "create",
+    "name": "Migracao Smoke Anual",
+    "periodicity": "YEARLY",
+    "periodicityValue": 1
+  },
+  "enrollmentWindow": {
+    "accessStartsAt": "2026-01-15",
+    "periodicity": "YEARLY",
+    "periodicityValue": 1
+  },
+  "catalogMapPath": "./catalog-map.local-smoke.json"
+}

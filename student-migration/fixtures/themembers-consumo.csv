@@ -1,0 +1,4 @@
+id,tenant_id,course_id,module_id,class_id,user_id,student_name,student_email,student_phone,time,to_total,time_total,finished,finished_at,rate_up,created_at,updated_at,course_title,module_title,lesson_title
+row-1,5776,src-course-1,src-mod-1,src-class-1,src-user-1,Ada Lovelace,ada@example.com,5511999990001,00:14:10,100,00:14:10,1,2026-05-05,,2026-05-05T16:34:27-03:00,2026-05-05T19:48:35-03:00,Excel Esencial Smoke,Introduccion,Clase 1 - Introduccion
+row-2,5776,src-course-1,src-mod-1,src-class-2,src-user-1,Ada Lovelace,ada@example.com,5511999990001,00:05:00,40,00:12:00,0,,,2026-05-06T10:00:00-03:00,2026-05-06T10:20:00-03:00,Excel Esencial Smoke,Introduccion,Clase 2 - Formulas
+row-3,5776,src-course-1,src-mod-1,src-class-1,src-user-2,Grace Hopper,grace@example.com,,00:14:10,100,00:14:10,1,2026-06-01,,2026-06-01T08:00:00-03:00,2026-06-01T08:20:00-03:00,Excel Esencial Smoke,Introduccion,Clase 1 - Introduccion

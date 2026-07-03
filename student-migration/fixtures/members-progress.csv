@@ -1,0 +1,5 @@
+Aluno,E-mail,Telefone,Grupo,Curso,Módulo,Aula,Porcentagem da Aula,Concluida,Data de Acesso
+Membro Um,membro.um@example.test,11999990000,Grupo Fake,Curso Fake,Modulo 1,Aula 1,100,1,2026-01-10
+Membro Um,membro.um@example.test,11999990000,Grupo Fake,Curso Fake,Modulo 1,Aula 2,50,0,2026-01-11
+Membro Dois,membro.dois@example.test,,Grupo Desconhecido,Curso Fake,Modulo 1,Aula 1,100,1,2026-01-12
+Membro Tres,membro.tres@example.test,,Grupo Fake,Curso Desconhecido,Modulo 1,Aula 1,Somente_Acessou,0,2026-01-13

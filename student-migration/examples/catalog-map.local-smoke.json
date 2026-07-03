@@ -1,0 +1,25 @@
+{
+  "tenantId": "tenant_local_tetra",
+  "generatedAt": "2026-07-01T00:00:00.000Z",
+  "products": [
+    {
+      "productId": "prod_smoke_excel",
+      "productTitle": "Excel Esencial Smoke",
+      "courseId": "course_smoke_excel",
+      "lessons": [
+        {
+          "lessonId": "lesson_smoke_1",
+          "lessonTitle": "Clase 1 - Introduccion",
+          "moduleTitle": "Introduccion",
+          "order": 1
+        },
+        {
+          "lessonId": "lesson_smoke_2",
+          "lessonTitle": "Clase 2 - Formulas",
+          "moduleTitle": "Introduccion",
+          "order": 2
+        }
+      ]
+    }
+  ]
+}
