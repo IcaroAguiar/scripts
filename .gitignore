@@ -1,13 +1,25 @@
-.env
 .DS_Store
-node_modules/
-bun.lockb
-storage/auth/
-storage/downloads/
-storage/logs/
-storage/manifests/
-storage/drive-export/
-test-results/
-playwright-report/
-codex-scripts/
-storage/*
+
+# Local agent/runtime artifacts outside individual script projects.
+.sc/
+.playwright-cli/
+litellm.config.yaml
+
+# Local secrets and generated outputs across all scripts.
+**/.env
+**/node_modules/
+**/dist/
+**/coverage/
+**/storage/
+**/.claude/
+**/AGENTS.md
+
+# Legacy course-content debugging/retry files kept local; do not re-add while reorganizing repo root.
+course-content-migration/retry-download-bot.ts
+course-content-migration/url_retry_lideranca.ts
+course-content-migration/scripts/debug-*.ts
+course-content-migration/scripts/retry-*.mjs
+course-content-migration/scripts/retry_*.py
+course-content-migration/src/scripts/debug-*.ts
+course-content-migration/src/scripts/retry-*.ts
+course-content-migration/src/scripts/url-*.ts

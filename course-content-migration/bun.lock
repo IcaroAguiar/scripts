@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "ead-migration-bot",
+      "name": "course-content-migration",
       "dependencies": {
         "dotenv": "^17.2.3",
         "fs-extra": "^11.3.2",
