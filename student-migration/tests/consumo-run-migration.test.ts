@@ -95,6 +95,33 @@ describe("runMigration com perfil v2 (themembers-consumo)", () => {
     expect(reportJson).not.toContain("ada@example.com");
   });
 
+  test("producao: execute exige approval file com runId correspondente", async () => {
+    const calls: string[] = [];
+    const profile = JSON.parse(
+      await readFile("./examples/profile.themembers.local-smoke.json", "utf8"),
+    );
+    profile.environment = "production";
+    profile.catalogMapPath = "../examples/catalog-map.local-smoke.json";
+    const { writeFile: wf } = await import("node:fs/promises");
+    await wf(`${STORAGE_PREFIX}-prod-profile.json`, JSON.stringify(profile));
+
+    // sem approval -> prepare com execute deve falhar
+    await expect(
+      runMigration({
+        input: "./fixtures/themembers-consumo.csv",
+        profile: `${STORAGE_PREFIX}-prod-profile.json`,
+        output: `${STORAGE_PREFIX}-prod-plan.json`,
+        ledger: `${STORAGE_PREFIX}-prod-runs.sqlite`,
+        executeReport: `${STORAGE_PREFIX}-prod-execute.json`,
+        execute: true,
+        adapter: "tetra-dev",
+        allowDevExecute: true,
+        consumoClients: makeFakeClients(calls),
+      }),
+    ).rejects.toThrow("approval file");
+    expect(calls.filter((c) => !c.startsWith("iam:"))).toHaveLength(0);
+  });
+
   test("override de janela digitado na TUI recalcula accessEndsAt", async () => {
     const result = await runMigration({
       input: "./fixtures/themembers-consumo.csv",

@@ -463,8 +463,14 @@ async function executeWithSelectedAdapter(
 }
 
 function assertTetraDevProfileAllowed(plan: AnyRunPlan): void {
-  if (plan.environment !== "dev" && plan.environment !== "local") {
-    throw new Error("Tetra dev adapter only supports local or dev profiles.");
+  // "production" tambem e permitido aqui: o gate real de producao e o
+  // approval file (assertExecutionAllowed), validado no prepare e no execute.
+  if (
+    plan.environment !== "dev" &&
+    plan.environment !== "local" &&
+    plan.environment !== "production"
+  ) {
+    throw new Error("Tetra adapter only supports local, dev or production profiles.");
   }
 }
 
