@@ -2,7 +2,15 @@ import { runMigration, type MigrationCliOptions } from "./run-migration";
 import { deriveMigrationOutputPaths } from "./output-paths";
 
 async function main(): Promise<void> {
-  const options = parseArgs(Bun.argv.slice(2));
+  const rawArgs = Bun.argv.slice(2);
+
+  if (rawArgs.includes("--groups")) {
+    const { runGroupsCli } = await import("./groups-cli");
+    await runGroupsCli(rawArgs);
+    return;
+  }
+
+  const options = parseArgs(rawArgs);
 
   if (options.interactive) {
     const { runInteractiveMigration } = await import("./interactive");

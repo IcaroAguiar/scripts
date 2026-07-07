@@ -20,6 +20,29 @@ export async function readWorkbook(path: string): Promise<SourceRow[]> {
   throw new Error("Unsupported input format. Use .csv or .xlsx.");
 }
 
+/** Le a primeira aba de um .xlsx como matriz posicional de textos. */
+export async function readWorkbookMatrix(path: string): Promise<string[][]> {
+  const workbook = new ExcelJS.Workbook();
+  const buffer = await readFile(path);
+  await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) {
+    throw new Error(`Workbook has no worksheets: ${path}`);
+  }
+
+  const matrix: string[][] = [];
+  worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+    const values: string[] = [];
+    for (let columnIndex = 1; columnIndex <= row.cellCount; columnIndex += 1) {
+      values[columnIndex - 1] = row.getCell(columnIndex).text.trim();
+    }
+    matrix[rowNumber - 1] = values;
+  });
+
+  return matrix.map((row) => row ?? []);
+}
+
 async function xlsxBufferToSourceRows(buffer: Buffer): Promise<SourceRow[]> {
   const workbook = new ExcelJS.Workbook();
   const excelBuffer = buffer as unknown as Parameters<typeof workbook.xlsx.load>[0];

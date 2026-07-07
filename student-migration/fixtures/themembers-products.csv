@@ -1,0 +1,6 @@
+user_id;user_name;user_email;document;phone;product_id;product_name;user_subscription_created_at,,,
+"aaa-1;""Arthur de Lima"";""arthur@example.com"";"""";"""";""prod-1"";""MBA em BI e Analytics + Tetra Club - 18 meses - as"";""2024-07-09 17:32:35""",,,
+"bbb-2;""João Ção"";""joao@example.com"";"""";"""";""prod-1"";""MBA em BI e Analytics + Tetra Club - 18 meses - as"";""2024-07-10 19:18:59""",,,
+"ccc-3;""Maria"";""maria@example.com"";"""";"""";""prod-2"";""PÓS-GRADUAÇÃO GESTÃO"," NÉGÓCIOS E IA + Tetra Club 10 - a"";""2024-08-01 10:00:00""",,,
+"ddd-4;""Pedro"";""pedro@example.com"";"""";"""";""prod-3"";""Tetra Club - Acesso 4 anos"";""2024-09-01 09:00:00""",,,
+,,,

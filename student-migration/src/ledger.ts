@@ -6,13 +6,26 @@ import type { ConsumoRunPlan } from "./consumo-plan";
 import type { ExecuteReport } from "./execute";
 import type { RunPlan } from "./migration-plan";
 
-export type MigrationLedger = AccessGroupStore & {
-  recordDryRun(plan: RunPlan): void;
-  recordExecute(report: ExecuteReport): void;
-  recordConsumoDryRun(plan: ConsumoRunPlan): void;
-  recordConsumoExecute(report: ConsumoExecuteReport): void;
-  close(): void;
+export type ProductGroupLink = {
+  themembersProductId: string;
+  themembersProductName: string;
+  accessGroupId: string;
+  groupName: string;
 };
+
+export type ProductGroupStore = {
+  recordProductGroupLink(tenantId: string, link: ProductGroupLink): void;
+  findProductGroupLink(tenantId: string, themembersProductId: string): ProductGroupLink | undefined;
+};
+
+export type MigrationLedger = AccessGroupStore &
+  ProductGroupStore & {
+    recordDryRun(plan: RunPlan): void;
+    recordExecute(report: ExecuteReport): void;
+    recordConsumoDryRun(plan: ConsumoRunPlan): void;
+    recordConsumoExecute(report: ConsumoExecuteReport): void;
+    close(): void;
+  };
 
 export async function openMigrationLedger(path: string): Promise<MigrationLedger> {
   await mkdir(dirname(path), { recursive: true });
@@ -105,6 +118,16 @@ export async function openMigrationLedger(path: string): Promise<MigrationLedger
       access_group_id text not null,
       created_at text not null default current_timestamp,
       primary key (tenant_id, name)
+    );
+
+    create table if not exists themembers_product_groups (
+      tenant_id text not null,
+      themembers_product_id text not null,
+      themembers_product_name text not null,
+      access_group_id text not null,
+      group_name text not null,
+      created_at text not null default current_timestamp,
+      primary key (tenant_id, themembers_product_id)
     );
   `);
 
@@ -229,6 +252,22 @@ export async function openMigrationLedger(path: string): Promise<MigrationLedger
     on conflict(tenant_id, name) do update set access_group_id = excluded.access_group_id
   `);
 
+  const findProductGroupLinkQuery = database.query(`
+    select themembers_product_id, themembers_product_name, access_group_id, group_name
+    from themembers_product_groups
+    where tenant_id = ? and themembers_product_id = ?
+  `);
+
+  const insertProductGroupLink = database.query(`
+    insert into themembers_product_groups (
+      tenant_id, themembers_product_id, themembers_product_name, access_group_id, group_name
+    ) values (?, ?, ?, ?, ?)
+    on conflict(tenant_id, themembers_product_id) do update set
+      themembers_product_name = excluded.themembers_product_name,
+      access_group_id = excluded.access_group_id,
+      group_name = excluded.group_name
+  `);
+
   return {
     recordDryRun(plan: RunPlan): void {
       insertRun.run(
@@ -322,6 +361,32 @@ export async function openMigrationLedger(path: string): Promise<MigrationLedger
     },
     recordCreatedAccessGroup(tenantId: string, name: string, accessGroupId: string): void {
       insertCreatedAccessGroup.run(tenantId, name, accessGroupId);
+    },
+    recordProductGroupLink(tenantId: string, link: ProductGroupLink): void {
+      insertProductGroupLink.run(
+        tenantId,
+        link.themembersProductId,
+        link.themembersProductName,
+        link.accessGroupId,
+        link.groupName,
+      );
+    },
+    findProductGroupLink(tenantId: string, themembersProductId: string) {
+      const row = findProductGroupLinkQuery.get(tenantId, themembersProductId) as
+        | {
+            themembers_product_id: string;
+            themembers_product_name: string;
+            access_group_id: string;
+            group_name: string;
+          }
+        | null;
+      if (!row) return undefined;
+      return {
+        themembersProductId: row.themembers_product_id,
+        themembersProductName: row.themembers_product_name,
+        accessGroupId: row.access_group_id,
+        groupName: row.group_name,
+      };
     },
     close(): void {
       database.close();
